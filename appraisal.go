@@ -116,6 +116,7 @@ type AppraisalItem struct {
 		Distance   string  `json:"distance,omitempty"`
 		BPC        bool    `json:"bpc,omitempty"`
 		BPCRuns    int64   `json:"bpcRuns,omitempty"`
+		BPCEff     float64 `json:"bpcEff,omitempty"`
 	} `json:"meta,omitempty"`
 }
 
@@ -184,6 +185,16 @@ type Prices struct {
 	Sell     PriceStats `json:"sell"`
 	Updated  time.Time  `json:"updated"`
 	Strategy string     `json:"strategy"`
+}
+
+func priceStatsFor(value float64) PriceStats {
+	return PriceStats{
+		Average:    value,
+		Max:        value,
+		Median:     value,
+		Min:        value,
+		Percentile: value,
+	}
 }
 
 // String returns a nice string version of the prices
@@ -322,15 +333,16 @@ func (app *App) PricesForItem(market string, item AppraisalItem) (Prices, error)
 			return prices, err
 		}
 
-		marketMarket := market
-		// If the user selected "universe" as the market then it is fairly likely that someone has a
-		// rediculously low price in a station no one wants to travel to. To avoid negative "value"
-		// for blueprint copies, we're forcing this item to be sold at jita prices Z
-		if marketMarket == "universe" {
-			marketMarket = "jita"
+		const jitaManufacturingFeeRate = 0.1
+		runs := item.Extra.BPCRuns
+		if runs == 0 {
+			runs = 1
 		}
+		efficiency := item.Extra.BPCEff
 
-		marketPrices := Prices{Strategy: "bpc"}
+		marketMarket := "jita"
+		productSellTotal := 0.0
+		productBuyTotal := 0.0
 		for _, product := range bpType.BlueprintProducts {
 			p, ok := app.PriceDB.GetPrice(marketMarket, product.TypeID)
 			if !ok {
@@ -338,35 +350,33 @@ func (app *App) PricesForItem(market string, item AppraisalItem) (Prices, error)
 				continue
 			}
 
-			marketPrices = marketPrices.Add(p.Set(p.Sell.Min).Mul(float64(product.Quantity)))
+			qty := float64(product.Quantity * runs)
+			productSellTotal += qty * p.Sell.Min
+			productBuyTotal += qty * p.Buy.Max
 		}
 
-		manufacturedPrices := Prices{Strategy: "bpc"}
+		materialCost := 0.0
 		for _, component := range bpType.Components {
-			p, ok := app.PriceDB.GetPrice(market, component.TypeID)
+			p, ok := app.PriceDB.GetPrice(marketMarket, component.TypeID)
 			if !ok {
 				log.Println("Failed getting getting price for component", component.TypeID)
 				continue
 			}
-			manufacturedPrices = manufacturedPrices.Add(p.Set(math.Min(p.Sell.Min, p.Buy.Max)).Mul(float64(component.Quantity)))
+
+			qty := math.Ceil(float64(component.Quantity) * float64(runs) * (1 - efficiency/100))
+			materialCost += qty * p.Sell.Min
 		}
 
-		// Assume Industry V (+10%) and misc costs (-1%)
-		manufacturedPrices = manufacturedPrices.Mul(0.91)
-		// prices := marketPrices.Sub(manufacturedPrices).Mul(float64(item.Extra.BPCRuns))
+		manufacturingFee := materialCost * jitaManufacturingFeeRate
+		sellPrice := math.Max(productSellTotal-materialCost-manufacturingFee, 0)
+		buyPrice := math.Max(productBuyTotal-materialCost-manufacturingFee, 0)
 
-		// log.Println("BPC Name: ", item.TypeName)
-		// log.Println("BPC materials:", manufacturedPrices)
-		// log.Println("BPC item value:", marketPrices)
-		log.Printf("BPC price for %s: %v, Item price: %v", tName, marketPrices.Sub(manufacturedPrices), marketPrices)
-
-		// bpcPrice := marketPrices.Sub(manufacturedPrices)
-		// if bpcPrice.Sell.Min > 0 && bpcPrice.Buy.Max > 0 {
-		// 	return bpcPrice, nil
-		// }
-
-		return Prices{}, nil
-		// return prices, nil
+		return Prices{
+			Strategy: "bpc",
+			Sell:     priceStatsFor(sellPrice),
+			Buy:      priceStatsFor(buyPrice),
+			All:      priceStatsFor((sellPrice + buyPrice) / 2),
+		}, nil
 	}
 
 	prices, _ = app.PriceDB.GetPrice(market, item.TypeID)
@@ -533,6 +543,7 @@ func parserResultToAppraisalItems(result parsers.ParserResult) []AppraisalItem {
 			newItem.Extra.BPC = item.BPC
 			if item.BPC {
 				newItem.Extra.BPCRuns = item.BPCRuns
+				newItem.Extra.BPCEff = item.BPCEff
 			}
 			items = append(items, newItem)
 		}

@@ -29,6 +29,7 @@ type IndustryItem struct {
 	Quantity int64
 	BPC      bool
 	BPCRuns  int64
+	BPCEff   float64
 }
 
 var reIndustry = regexp.MustCompile(`^([\S ]+) \(([\d]+) Units?\)$`)
@@ -52,13 +53,13 @@ var reIndustryMaterials = regexp.MustCompile(strings.Join([]string{
 }, ""))
 
 var industryHeaders = map[string]bool{
-	"Components				": true,
-	"Minerals				": true,
+	"Components				":          true,
+	"Minerals				":            true,
 	"Planetary materials				": true,
-	"Items				": true,
-	"Datacores				": true,
-	"Optional items				": true,
-	"No item selected				": true,
+	"Items				":               true,
+	"Datacores				":           true,
+	"Optional items				":      true,
+	"No item selected				":    true,
 	`Item	Required	Available	Est. Unit price	typeID`: true,
 }
 
@@ -115,6 +116,7 @@ func ParseIndustry(input Input) (ParserResult, Input) {
 
 	for _, match := range matches2 {
 		runCount := ToInt(match[6])
+		materialEff := ToInt(match[3])
 		isBPC := false
 		if runCount > 0 {
 			isBPC = true
@@ -123,7 +125,7 @@ func ParseIndustry(input Input) (ParserResult, Input) {
 		if count == 0 {
 			count = 1
 		}
-		matchgroup[IndustryItem{Name: match[2], BPC: isBPC, BPCRuns: runCount}] += count
+		matchgroup[IndustryItem{Name: match[2], BPC: isBPC, BPCRuns: runCount, BPCEff: float64(materialEff)}] += count
 	}
 	// add items w/totals
 	for item, quantity := range matchgroup {
